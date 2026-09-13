@@ -1,0 +1,1293 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Карта территорий - Конструктор локаций</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      overflow: hidden;
+      background-color: #bdb3b2;
+      user-select: none;
+    }
+
+    .app { width: 100vw; height: 100vh; display: flex; flex-direction: column; }
+
+    .toolbar {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 16px; background-color: #827B7A;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.2); z-index: 50; flex-wrap: wrap;
+    }
+
+    .btn {
+      padding: 8px 16px; border-radius: 8px; font-weight: 600;
+      color: #fff; border: none; cursor: pointer; font-size: 14px;
+      transition: all 0.15s;
+    }
+    .btn:hover { filter: brightness(1.1); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .btn-primary { background-color: #5a9a5a; box-shadow: 0 2px 4px rgba(0,0,0,0.2); }
+    .btn-export { background-color: #4a7c9a; box-shadow: 0 2px 4px rgba(0,0,0,0.2); }
+    .btn-tool { background-color: transparent; color: rgba(255,255,255,0.6); }
+    .btn-tool.active {
+      background-color: #9C9392; color: #fff;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.2); transform: scale(1.05);
+    }
+    .btn-tool.delete.active { background-color: #b84444; }
+
+    .separator { width: 1px; height: 32px; background-color: rgba(255,255,255,0.2); margin: 0 4px; }
+
+    .portal-type-btn {
+      padding: 6px 12px; border-radius: 8px; font-size: 13px; font-weight: 600;
+      color: #2a2a2a; border: none; cursor: pointer;
+      display: flex; align-items: center; gap: 6px; transition: all 0.15s;
+    }
+    .portal-type-btn.active {
+      box-shadow: 0 0 0 2px #fff, 0 2px 8px rgba(0,0,0,0.2); transform: scale(1.05);
+    }
+    .portal-type-btn:not(.active) { opacity: 0.6; }
+
+    .status {
+      margin-left: auto; color: rgba(255,255,255,0.9);
+      font-size: 13px; font-weight: 500; padding: 4px 12px;
+      border-radius: 8px; background-color: rgba(0,0,0,0.2);
+    }
+
+    .legend {
+      display: flex; align-items: center; gap: 20px;
+      padding: 8px 16px; background-color: #9C9392;
+    }
+    .legend-item { display: flex; align-items: center; gap: 6px; }
+    .legend-dot { width: 16px; height: 16px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.5); }
+    .legend-text { color: rgba(255,255,255,0.9); font-size: 13px; }
+    .stats {
+      margin-left: auto; color: rgba(255,255,255,0.6);
+      font-size: 12px; font-family: monospace; display: flex; gap: 12px;
+    }
+
+    .canvas {
+      flex: 1; position: relative; overflow: hidden;
+      background-image: radial-gradient(circle, #a89f9e 1px, transparent 1px);
+      background-size: 20px 20px;
+    }
+    .canvas.select-mode { cursor: default; }
+    .canvas.dragging { cursor: grabbing !important; }
+    .canvas.panning { cursor: grabbing !important; }
+    .canvas.crosshair-mode { cursor: crosshair; }
+    .canvas.grab-mode { cursor: grab; }
+
+    .canvas-inner {
+      position: absolute; top: 0; left: 0;
+      width: 3000px; height: 2000px;
+      transform-origin: 0 0; will-change: transform;
+    }
+
+    .svg-overlay {
+      position: absolute; top: 0; left: 0;
+      width: 100%; height: 100%;
+      z-index: 5; pointer-events: none;
+    }
+    .svg-overlay.delete-mode { pointer-events: auto; }
+
+    .location { position: absolute; z-index: 2; transition: transform 0.05s; }
+    .location.selected { z-index: 10; transform: translateY(-2px); }
+    .location.connect-target { z-index: 8; }
+
+    .location-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 4px 8px; height: 28px;
+      border-radius: 6px 6px 0 0;
+      font-size: 12px; font-weight: 600;
+      background-color: #9C9392; color: #fff;
+      box-shadow: 0 -2px 8px rgba(0,0,0,0.1);
+      transition: background-color 0.15s;
+    }
+    .location.selected .location-header { background-color: #5a9a5a; }
+    .location.connect-target .location-header {
+      background-color: #6b6564;
+      box-shadow: 0 0 0 2px #ff6b6b, 0 -2px 8px rgba(0,0,0,0.1);
+    }
+    .location-header.draggable { cursor: grab; }
+    .location-header.draggable:active { cursor: grabbing; }
+
+    .location-name {
+      display: flex; align-items: center; gap: 4px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      max-width: 180px; cursor: text;
+    }
+    .location-name:hover { text-decoration: underline dotted; }
+
+    .location-name-input {
+      background: rgba(255,255,255,0.95);
+      color: #2a2a2a;
+      border: 1px solid #5a9a5a;
+      border-radius: 3px;
+      padding: 1px 4px;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 600;
+      outline: none;
+      width: 160px;
+    }
+
+    .location-info { display: flex; align-items: center; gap: 4px; }
+    .portal-count { font-size: 10px; opacity: 0.6; margin-right: 4px; }
+
+    .delete-btn {
+      width: 18px; height: 18px;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: 4px; background-color: rgba(220,50,50,0.8);
+      color: #fff; border: none; cursor: pointer;
+      font-size: 12px; line-height: 1;
+    }
+    .delete-btn:hover { background-color: rgba(220,50,50,1); }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(10, 24px);
+      grid-template-rows: repeat(6, 24px);
+      border: 2px solid #bdb3b2;
+      border-radius: 0 0 6px 6px;
+      background-color: #faf8f7;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      overflow: hidden;
+      transition: border-color 0.15s, box-shadow 0.15s;
+      position: relative;
+    }
+    .location.selected .grid {
+      border-color: #5a9a5a;
+      box-shadow: 0 4px 20px rgba(90,154,90,0.3);
+    }
+    .location.connect-target .grid {
+      border-color: #ff6b6b;
+      box-shadow: 0 0 0 2px #ff6b6b, 0 4px 12px rgba(255,107,107,0.3);
+    }
+
+    .cell {
+      position: relative;
+      display: flex; align-items: center; justify-content: center;
+      border-right: 1px solid #e8e4e3;
+      border-bottom: 1px solid #e8e4e3;
+      transition: background-color 0.1s, outline 0.1s;
+    }
+    .cell.add-portal-mode:hover {
+      outline: 2px solid rgba(130,123,122,0.6);
+      outline-offset: -2px; z-index: 1;
+    }
+    .cell.connect-mode:hover {
+      outline: 2px solid rgba(255, 107, 107, 0.6);
+      outline-offset: -2px; z-index: 1;
+    }
+    .cell.delete-mode:hover {
+      outline: 2px solid rgba(220, 50, 50, 0.6);
+      outline-offset: -2px; z-index: 1;
+    }
+    .cell.connect-from {
+      outline: 3px solid #ff6b6b;
+      outline-offset: -2px; z-index: 2;
+    }
+
+    .portal {
+      position: relative; width: 100%; height: 100%;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .portal-circle {
+      width: 18px; height: 18px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      color: #fff; font-weight: bold; font-size: 10px;
+      border: 2px solid rgba(255,255,255,0.6);
+      box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+      transition: box-shadow 0.15s, transform 0.15s;
+    }
+    .portal.selected .portal-circle {
+      box-shadow: 0 0 0 3px #ff6b6b, 0 0 12px rgba(255,107,107,0.5);
+      transform: scale(1.1);
+    }
+
+    .portal-overlay {
+      position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      background-color: rgba(0,0,0,0.4); border-radius: 50%;
+      opacity: 0; cursor: pointer; transition: opacity 0.15s;
+    }
+    .portal-overlay:hover { opacity: 1; }
+    .portal-overlay span { color: #fff; font-size: 12px; font-weight: bold; }
+
+    .portal-select-overlay {
+      position: absolute; inset: 0;
+      border-radius: 50%; cursor: pointer; z-index: 3;
+    }
+
+    .preview-circle {
+      display: none; width: 16px; height: 16px;
+      border-radius: 50%;
+      border: 2px dashed var(--portal-color, #6ecdb8);
+      opacity: 0.7;
+    }
+    .cell.add-portal-mode:hover .preview-circle { display: block; }
+
+    .empty-state {
+      position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      z-index: 20; pointer-events: none;
+    }
+    .empty-state-card {
+      text-align: center; padding: 32px; border-radius: 16px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.15);
+      max-width: 440px; background-color: #faf8f7;
+      border: 2px solid #bdb3b2; pointer-events: auto;
+    }
+    .empty-state-icon { font-size: 48px; margin-bottom: 16px; }
+    .empty-state-title { font-size: 20px; font-weight: bold; margin-bottom: 12px; color: #827B7A; }
+    .empty-state-text { font-size: 13px; margin-bottom: 20px; line-height: 1.6; color: #9C9392; }
+    .instructions {
+      text-align: left; font-size: 13px; margin-bottom: 20px;
+      padding: 0 16px; color: #827B7A; line-height: 1.8;
+    }
+    .create-btn {
+      padding: 10px 24px; border-radius: 10px; font-weight: bold;
+      color: #fff; background-color: #5a9a5a; border: none;
+      cursor: pointer; font-size: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+    }
+    .create-btn:hover { filter: brightness(1.1); }
+    .zoom-hint { margin-top: 12px; font-size: 11px; color: #9C9392; font-style: italic; }
+    .kbd {
+      display: inline-block; padding: 2px 6px;
+      background-color: #e8e4e3; border-radius: 3px;
+      font-family: monospace; font-size: 11px;
+      color: #6b6564; border: 1px solid #bdb3b2;
+    }
+
+    .exporting .location.selected { transform: none; }
+    .exporting .location.selected .location-header { background-color: #9C9392; }
+    .exporting .location.selected .grid { border-color: #bdb3b2; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+    .exporting .portal.selected .portal-circle { box-shadow: 0 2px 8px rgba(0,0,0,0.2); transform: none; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="toolbar">
+      <button class="btn btn-primary" id="addLocationBtn">+ Локация</button>
+      <div class="separator"></div>
+
+      <button class="btn btn-tool active" data-mode="select">🔍 Выбор</button>
+      <button class="btn btn-tool" data-mode="add-portal">⬡ Переход</button>
+      <button class="btn btn-tool" data-mode="connect">🔗 Связать</button>
+      <button class="btn btn-tool delete" data-mode="delete">🗑 Удалить</button>
+
+      <div id="portalTypeSelector" style="display: none;">
+        <div class="separator"></div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="color: rgba(255,255,255,0.7); font-size: 13px; font-weight: 500;">Тип:</span>
+          <button class="portal-type-btn active" data-type="bidirectional" style="background-color: #6ecdb8;">⇄ Двусторонний</button>
+          <button class="portal-type-btn" data-type="one-way" style="background-color: #b88fd4;">→ Односторонний</button>
+          <button class="portal-type-btn" data-type="dead-end" style="background-color: #f0a060;">⊘ Тупиковый</button>
+        </div>
+      </div>
+
+      <div class="separator"></div>
+      <button class="btn btn-export" id="exportPngBtn">💾 PNG</button>
+      <button class="btn btn-export" id="exportPdfBtn" style="background-color: #9a4a4a;">📄 PDF</button>
+
+      <div class="status" id="statusText">✋ Перетаскивайте локации</div>
+    </div>
+
+    <div class="legend">
+      <span style="color: rgba(255,255,255,0.9); font-weight: 600; font-size: 13px;">Легенда:</span>
+      <div class="legend-item">
+        <div class="legend-dot" style="background-color: #6ecdb8;"></div>
+        <span class="legend-text">⇄ Двусторонний (с другим ⇄)</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-dot" style="background-color: #b88fd4;"></div>
+        <span class="legend-text">→ Односторонний (уходит под локацию)</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-dot" style="background-color: #f0a060;"></div>
+        <span class="legend-text">⊘ Тупиковый (без связей)</span>
+      </div>
+      <div class="stats">
+        <span id="locationCount">Локаций: 0</span>
+        <span>|</span>
+        <span id="portalCount">Переходов: 0</span>
+        <span>|</span>
+        <span id="connectionCount">Связей: 0</span>
+        <span>|</span>
+        <span id="connectionCount">by Высь [1545056]</span>
+      </div>
+    </div>
+
+    <div class="canvas select-mode grab-mode" id="canvas">
+      <div class="canvas-inner" id="canvasInner">
+        <svg class="svg-overlay" id="svgOverlay"></svg>
+        <div id="locationsContainer"></div>
+      </div>
+
+      <div class="empty-state" id="emptyState">
+        <div class="empty-state-card">
+          <div class="empty-state-icon">🗺️</div>
+          <h2 class="empty-state-title">Конструктор карт территорий</h2>
+          <p class="empty-state-text">
+            Создавайте компактные локации 10×6 клеток, размещайте переходы и соединяйте их.
+          </p>
+          <div class="instructions">
+            <p>🔍 <b>Выбор</b> — выделение и перетаскивание</p>
+            <p>📝 <b>Переименовать</b> — F2/Enter</p>
+            <p>⬡ <b>Переход</b> — размещение переходов на клетках</p>
+            <p>🔗 <b>Связать</b> — двусторонние или односторонние переходы</p>
+            <p>🗑 <b>Удалить</b> — <span class="kbd">Delete</span></p>
+          </div>
+          <button class="create-btn" id="createFirstBtn">+ Создать первую локацию</button>
+          <div class="zoom-hint">💡 Колесико: масштаб | ЛКМ по фону: перемещение | <span class="kbd">Esc</span>: снять выделение</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const state = {
+      locations: [],
+      portals: [],
+      connections: [],
+      toolMode: 'select',
+      portalType: 'bidirectional',
+      selection: null,
+      connectFrom: null,
+      dragging: null,
+      idCounter: 0,
+      scale: 1,
+      panX: 0,
+      panY: 0,
+      isPanning: false,
+      lastMouseX: 0,
+      lastMouseY: 0
+    };
+
+    const GRID_ROWS = 6;
+    const GRID_COLS = 10;
+    const CELL_SIZE = 24;
+    const HEADER_HEIGHT = 28;
+    const CANVAS_WIDTH = 3000;
+    const CANVAS_HEIGHT = 2000;
+
+    const PORTAL_COLORS = {
+      'bidirectional': '#6ecdb8',
+      'one-way': '#b88fd4',
+      'dead-end': '#f0a060'
+    };
+
+    const PORTAL_ICONS = {
+      'bidirectional': '⇄',
+      'one-way': '→',
+      'dead-end': '⊘'
+    };
+
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+
+    function genId() {
+      state.idCounter++;
+      return `id_${state.idCounter}_${Date.now()}`;
+    }
+
+    function getPortalCenter(portal) {
+      const loc = state.locations.find(l => l.id === portal.locationId);
+      if (!loc) return null;
+      return {
+        x: loc.x + portal.col * CELL_SIZE + CELL_SIZE / 2,
+        y: loc.y + HEADER_HEIGHT + portal.row * CELL_SIZE + CELL_SIZE / 2
+      };
+    }
+    
+    function getLocationCenter(locId) {
+      const loc = state.locations.find(l => l.id === locId);
+      if (!loc) return null;
+      return {
+        x: loc.x + (GRID_COLS * CELL_SIZE) / 2,
+        y: loc.y + HEADER_HEIGHT + (GRID_ROWS * CELL_SIZE) / 2
+      };
+    }
+
+    function getLocationRect(locId) {
+      const loc = state.locations.find(l => l.id === locId);
+      if (!loc) return null;
+      return {
+        x: loc.x,
+        y: loc.y + HEADER_HEIGHT,
+        width: GRID_COLS * CELL_SIZE,
+        height: GRID_ROWS * CELL_SIZE
+      };
+    }
+
+    function screenToCanvas(clientX, clientY) {
+      const canvas = document.getElementById('canvas');
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: (clientX - rect.left - state.panX) / state.scale,
+        y: (clientY - rect.top - state.panY) / state.scale
+      };
+    }
+
+    function updateTransform() {
+      const canvasInner = document.getElementById('canvasInner');
+      canvasInner.style.transform = `translate(${state.panX}px, ${state.panY}px) scale(${state.scale})`;
+      
+      const canvas = document.getElementById('canvas');
+      canvas.style.backgroundSize = `${20 * state.scale}px ${20 * state.scale}px`;
+      canvas.style.backgroundPosition = `${state.panX}px ${state.panY}px`;
+    }
+
+    function setSelection(type, id) {
+      state.selection = { type, id };
+      render();
+    }
+
+    function clearSelection() {
+      state.selection = null;
+      state.connectFrom = null;
+      render();
+    }
+
+    function addLocation() {
+      const newLoc = {
+        id: genId(),
+        name: `Локация ${state.locations.length + 1}`,
+        x: 60 + (state.locations.length % 4) * 300,
+        y: 60 + Math.floor(state.locations.length / 4) * 200
+      };
+      state.locations.push(newLoc);
+      setSelection('location', newLoc.id);
+    }
+
+    function deleteLocation(locId) {
+      const locPortals = state.portals.filter(p => p.locationId === locId);
+      const portalIds = locPortals.map(p => p.id);
+      
+      state.connections = state.connections.filter(c => {
+        if (portalIds.includes(c.fromPortalId)) return false;
+        if (c.toPortalId && portalIds.includes(c.toPortalId)) return false;
+        if (c.to && c.to.type === 'location' && c.to.id === locId) return false;
+        return true;
+      });
+      
+      state.portals = state.portals.filter(p => p.locationId !== locId);
+      state.locations = state.locations.filter(l => l.id !== locId);
+      
+      if (state.selection?.type === 'location' && state.selection.id === locId) {
+        state.selection = null;
+      }
+      render();
+    }
+
+    function deletePortal(portalId) {
+      state.connections = state.connections.filter(c => 
+        c.fromPortalId !== portalId && c.toPortalId !== portalId
+      );
+      state.portals = state.portals.filter(p => p.id !== portalId);
+      
+      if (state.connectFrom === portalId) state.connectFrom = null;
+      if (state.selection?.type === 'portal' && state.selection.id === portalId) {
+        state.selection = null;
+      }
+      render();
+    }
+
+    function deleteSelected() {
+      if (!state.selection) return;
+      if (state.selection.type === 'location') {
+        deleteLocation(state.selection.id);
+      } else if (state.selection.type === 'portal') {
+        deletePortal(state.selection.id);
+      }
+    }
+
+    function handleCellClick(locationId, row, col) {
+      const cellPortal = state.portals.find(p => p.locationId === locationId && p.row === row && p.col === col);
+
+      if (state.toolMode === 'add-portal') {
+        if (cellPortal) return;
+        state.portals.push({
+          id: genId(), locationId, row, col, type: state.portalType
+        });
+        render();
+      } else if (state.toolMode === 'connect') {
+        if (cellPortal) {
+          if (cellPortal.type === 'dead-end') return;
+          
+          if (!state.connectFrom) {
+            state.connectFrom = cellPortal.id;
+          } else {
+            const fromPortal = state.portals.find(p => p.id === state.connectFrom);
+            if (fromPortal && fromPortal.type === 'bidirectional' && cellPortal.type === 'bidirectional') {
+              if (state.connectFrom !== cellPortal.id) {
+                const exists = state.connections.find(c =>
+                  (c.fromPortalId === state.connectFrom && c.toPortalId === cellPortal.id) ||
+                  (c.fromPortalId === cellPortal.id && c.toPortalId === state.connectFrom)
+                );
+                if (!exists) {
+                  state.connections.push({
+                    id: genId(),
+                    fromPortalId: state.connectFrom,
+                    toPortalId: cellPortal.id
+                  });
+                }
+              }
+              state.connectFrom = null;
+            } else {
+              state.connectFrom = cellPortal.id;
+            }
+          }
+        } else {
+          if (state.connectFrom) {
+            const fromPortal = state.portals.find(p => p.id === state.connectFrom);
+            if (fromPortal && fromPortal.type === 'one-way') {
+              // Нельзя связать односторонний переход с той же локацией, где он находится
+              if (fromPortal.locationId === locationId) {
+                state.connectFrom = null;
+                render();
+                return;
+              }
+              const exists = state.connections.find(c =>
+                c.fromPortalId === state.connectFrom && 
+                c.to && c.to.type === 'location' && c.to.id === locationId
+              );
+              if (!exists) {
+                state.connections.push({
+                  id: genId(),
+                  fromPortalId: state.connectFrom,
+                  to: { type: 'location', id: locationId }
+                });
+              }
+              state.connectFrom = null;
+            } else if (fromPortal) {
+              state.connectFrom = null;
+            }
+          }
+        }
+        render();
+      } else if (state.toolMode === 'delete') {
+        if (cellPortal) deletePortal(cellPortal.id);
+      } else if (state.toolMode === 'select') {
+        if (cellPortal) setSelection('portal', cellPortal.id);
+        else setSelection('location', locationId);
+      }
+    }
+
+    function deleteConnection(connId) {
+      state.connections = state.connections.filter(c => c.id !== connId);
+      render();
+    }
+
+    function setToolMode(mode) {
+      state.toolMode = mode;
+      state.connectFrom = null;
+      render();
+    }
+
+    function setPortalType(type) {
+      state.portalType = type;
+      render();
+    }
+
+    function renderConnections() {
+      const svg = document.getElementById('svgOverlay');
+      svg.innerHTML = '';
+
+      // Создаём <defs> для масок
+      const defs = document.createElementNS(SVG_NS, 'defs');
+      svg.appendChild(defs);
+
+      state.connections.forEach(conn => {
+        const fromPortal = state.portals.find(p => p.id === conn.fromPortalId);
+        if (!fromPortal) return;
+
+        const from = getPortalCenter(fromPortal);
+        if (!from) return;
+
+        let to;
+        let targetLocationId = null;
+        
+        if (conn.toPortalId) {
+          const toPortal = state.portals.find(p => p.id === conn.toPortalId);
+          if (!toPortal) return;
+          to = getPortalCenter(toPortal);
+        } else if (conn.to && conn.to.type === 'location') {
+          to = getLocationCenter(conn.to.id);
+          if (!to) return;
+          targetLocationId = conn.to.id;
+        } else {
+          return;
+        }
+
+        const fromType = fromPortal.type;
+        let lineColor = '#827B7A';
+        let dashArray = '';
+        
+        if (fromType === 'bidirectional') {
+          lineColor = '#4db89e';
+        } else if (fromType === 'one-way') {
+          lineColor = '#9b6fbf';
+          dashArray = targetLocationId ? '4,3' : '';
+        }
+
+        const dx = to.x - from.x;
+        const dy = to.y - from.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist === 0) return;
+
+        let curvature = Math.min(dist * 0.25, 50);
+        if (targetLocationId) curvature = Math.min(dist * 0.4, 80);
+        
+        const nx = (-dy / dist) * curvature * 0.2;
+        const ny = (dx / dist) * curvature * 0.2;
+
+        const cx1 = from.x + dx * 0.25 + nx;
+        const cy1 = from.y + dy * 0.25 + ny;
+        const cx2 = from.x + dx * 0.75 + nx;
+        const cy2 = from.y + dy * 0.75 + ny;
+
+        const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+        const pathD = `M ${from.x} ${from.y} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${to.x} ${to.y}`;
+
+        // Группа для линии и стрелок
+        const group = document.createElementNS(SVG_NS, 'g');
+
+        // Если связь уходит в локацию — применяем маску, скрывающую область целевой локации
+        if (targetLocationId) {
+          const locRect = getLocationRect(targetLocationId);
+          if (locRect) {
+            const maskId = `mask-${conn.id}`;
+            const mask = document.createElementNS(SVG_NS, 'mask');
+            mask.setAttribute('id', maskId);
+            mask.setAttribute('maskUnits', 'userSpaceOnUse');
+            mask.setAttribute('x', '0');
+            mask.setAttribute('y', '0');
+            mask.setAttribute('width', String(CANVAS_WIDTH));
+            mask.setAttribute('height', String(CANVAS_HEIGHT));
+
+            // Белый фон — всё видно
+            const maskBg = document.createElementNS(SVG_NS, 'rect');
+            maskBg.setAttribute('x', '0');
+            maskBg.setAttribute('y', '0');
+            maskBg.setAttribute('width', String(CANVAS_WIDTH));
+            maskBg.setAttribute('height', String(CANVAS_HEIGHT));
+            maskBg.setAttribute('fill', 'white');
+            mask.appendChild(maskBg);
+
+            // Чёрный прямоугольник в области локации-цели — там скрываем
+            const maskHole = document.createElementNS(SVG_NS, 'rect');
+            maskHole.setAttribute('x', String(locRect.x));
+            maskHole.setAttribute('y', String(locRect.y));
+            maskHole.setAttribute('width', String(locRect.width));
+            maskHole.setAttribute('height', String(locRect.height));
+            maskHole.setAttribute('fill', 'black');
+            mask.appendChild(maskHole);
+
+            defs.appendChild(mask);
+            group.setAttribute('mask', `url(#${maskId})`);
+          }
+        }
+
+        // Линия
+        const path = document.createElementNS(SVG_NS, 'path');
+        path.setAttribute('d', pathD);
+        path.setAttribute('stroke', lineColor);
+        path.setAttribute('stroke-width', '2');
+        path.setAttribute('fill', 'none');
+        path.setAttribute('opacity', '0.85');
+        path.setAttribute('stroke-linecap', 'round');
+        if (dashArray) path.setAttribute('stroke-dasharray', dashArray);
+        group.appendChild(path);
+
+        // Стрелки (в той же группе, чтобы маска применялась и к ним)
+        if (fromType === 'one-way') {
+          const arrow = document.createElementNS(SVG_NS, 'polygon');
+          arrow.setAttribute('points', '-6,-4 6,0 -6,4');
+          arrow.setAttribute('fill', lineColor);
+          arrow.setAttribute('transform', `translate(${to.x - dx * 0.08}, ${to.y - dy * 0.08}) rotate(${angle})`);
+          arrow.setAttribute('opacity', '0.9');
+          group.appendChild(arrow);
+        }
+
+        if (fromType === 'bidirectional') {
+          const arrow1 = document.createElementNS(SVG_NS, 'polygon');
+          arrow1.setAttribute('points', '-5,-3 5,0 -5,3');
+          arrow1.setAttribute('fill', lineColor);
+          arrow1.setAttribute('transform', `translate(${to.x - dx * 0.1}, ${to.y - dy * 0.1}) rotate(${angle})`);
+          arrow1.setAttribute('opacity', '0.9');
+          group.appendChild(arrow1);
+
+          const arrow2 = document.createElementNS(SVG_NS, 'polygon');
+          arrow2.setAttribute('points', '-5,-3 5,0 -5,3');
+          arrow2.setAttribute('fill', lineColor);
+          arrow2.setAttribute('transform', `translate(${from.x + dx * 0.1}, ${from.y + dy * 0.1}) rotate(${angle + 180})`);
+          arrow2.setAttribute('opacity', '0.9');
+          group.appendChild(arrow2);
+        }
+
+        svg.appendChild(group);
+
+        // Hitbox для удаления (отдельно, без маски — чтобы можно было кликнуть по всей линии)
+        if (state.toolMode === 'delete') {
+          const hitbox = document.createElementNS(SVG_NS, 'path');
+          hitbox.setAttribute('d', pathD);
+          hitbox.setAttribute('stroke', 'transparent');
+          hitbox.setAttribute('stroke-width', '12');
+          hitbox.setAttribute('fill', 'none');
+          hitbox.style.cursor = 'pointer';
+          hitbox.style.pointerEvents = 'stroke';
+          hitbox.addEventListener('click', (e) => {
+            e.stopPropagation();
+            deleteConnection(conn.id);
+          });
+          svg.appendChild(hitbox);
+        }
+      });
+    }
+
+    function renderLocation(loc) {
+      const locPortals = state.portals.filter(p => p.locationId === loc.id);
+      const isSelected = state.selection?.type === 'location' && state.selection.id === loc.id;
+      
+      let isConnectTarget = false;
+      if (state.toolMode === 'connect' && state.connectFrom) {
+        const fromPortal = state.portals.find(p => p.id === state.connectFrom);
+        if (fromPortal && fromPortal.type === 'one-way' && fromPortal.locationId !== loc.id) {
+          isConnectTarget = true;
+        }
+      }
+
+      const locDiv = document.createElement('div');
+      locDiv.className = 'location';
+      if (isSelected) locDiv.classList.add('selected');
+      if (isConnectTarget) locDiv.classList.add('connect-target');
+      locDiv.style.left = `${loc.x}px`;
+      locDiv.style.top = `${loc.y}px`;
+      locDiv.style.width = `${GRID_COLS * CELL_SIZE}px`;
+
+      const header = document.createElement('div');
+      header.className = `location-header${state.toolMode === 'select' ? ' draggable' : ''}`;
+
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'location-name';
+      nameSpan.textContent = `📍 ${loc.name}`;
+      
+      // Двойной клик — переименование
+      nameSpan.addEventListener('dblclick', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        startRename(loc, nameSpan);
+      });
+      
+      header.appendChild(nameSpan);
+
+      const infoSpan = document.createElement('span');
+      infoSpan.className = 'location-info';
+
+      const countSpan = document.createElement('span');
+      countSpan.className = 'portal-count';
+      countSpan.textContent = `${locPortals.length}`;
+      infoSpan.appendChild(countSpan);
+
+      if (state.toolMode === 'delete') {
+        const delBtn = document.createElement('button');
+        delBtn.className = 'delete-btn';
+        delBtn.textContent = '✕';
+        delBtn.type = 'button';
+        delBtn.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          deleteLocation(loc.id);
+        });
+        infoSpan.appendChild(delBtn);
+      }
+
+      header.appendChild(infoSpan);
+
+      if (state.toolMode === 'select') {
+        header.addEventListener('mousedown', (e) => {
+          // Если сейчас идёт редактирование имени — не начинаем перетаскивание
+          if (e.target.closest('.location-name-input')) return;
+          if (e.button !== 0) return;
+          e.preventDefault();
+          e.stopPropagation();
+          const pos = screenToCanvas(e.clientX, e.clientY);
+          state.dragging = {
+            locationId: loc.id,
+            offsetX: pos.x - loc.x,
+            offsetY: pos.y - loc.y
+          };
+          setSelection('location', loc.id);
+          document.getElementById('canvas').classList.add('dragging');
+        });
+      }
+
+      header.addEventListener('click', (e) => {
+        if (e.target.closest('.location-name-input')) return;
+        if (state.toolMode === 'select') {
+          e.stopPropagation();
+          setSelection('location', loc.id);
+        } else if (state.toolMode === 'connect' && state.connectFrom) {
+          const fromPortal = state.portals.find(p => p.id === state.connectFrom);
+          if (fromPortal && fromPortal.type === 'one-way' && fromPortal.locationId !== loc.id) {
+            const exists = state.connections.find(c =>
+              c.fromPortalId === state.connectFrom && 
+              c.to && c.to.type === 'location' && c.to.id === loc.id
+            );
+            if (!exists) {
+              state.connections.push({
+                id: genId(),
+                fromPortalId: state.connectFrom,
+                to: { type: 'location', id: loc.id }
+              });
+            }
+            state.connectFrom = null;
+            render();
+          }
+        }
+      });
+
+      locDiv.appendChild(header);
+
+      const grid = document.createElement('div');
+      grid.className = 'grid';
+
+      for (let i = 0; i < GRID_ROWS * GRID_COLS; i++) {
+        const row = Math.floor(i / GRID_COLS);
+        const col = i % GRID_COLS;
+        const portal = locPortals.find(p => p.row === row && p.col === col);
+        const isConnectFrom = state.connectFrom && portal && state.connectFrom === portal.id;
+        const isPortalSelected = state.selection?.type === 'portal' && state.selection.id === portal?.id;
+
+        const cell = document.createElement('div');
+        cell.className = 'cell';
+
+        if (state.toolMode === 'add-portal') cell.classList.add('add-portal-mode');
+        else if (state.toolMode === 'connect') cell.classList.add('connect-mode');
+        else if (state.toolMode === 'delete') cell.classList.add('delete-mode');
+
+        if (isConnectFrom) cell.classList.add('connect-from');
+
+        let bg;
+        if (portal) {
+          bg = PORTAL_COLORS[portal.type];
+        } else {
+          bg = (row + col) % 2 === 0 ? '#faf8f7' : '#f3f0ef';
+        }
+        cell.style.backgroundColor = bg;
+        cell.style.setProperty('--portal-color', PORTAL_COLORS[state.portalType]);
+
+        if (portal) {
+          const portalDiv = document.createElement('div');
+          portalDiv.className = 'portal';
+          if (isPortalSelected) portalDiv.classList.add('selected');
+
+          const circle = document.createElement('div');
+          circle.className = 'portal-circle';
+          circle.style.backgroundColor = PORTAL_COLORS[portal.type];
+          circle.style.boxShadow = `0 2px 8px ${PORTAL_COLORS[portal.type]}80`;
+          circle.textContent = PORTAL_ICONS[portal.type];
+          portalDiv.appendChild(circle);
+
+          if (state.toolMode === 'select') {
+            const selectOverlay = document.createElement('div');
+            selectOverlay.className = 'portal-select-overlay';
+            selectOverlay.addEventListener('click', (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setSelection('portal', portal.id);
+            });
+            portalDiv.appendChild(selectOverlay);
+          } else if (state.toolMode === 'delete') {
+            const overlay = document.createElement('div');
+            overlay.className = 'portal-overlay';
+            overlay.innerHTML = '<span>✕</span>';
+            overlay.addEventListener('click', (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              deletePortal(portal.id);
+            });
+            portalDiv.appendChild(overlay);
+          }
+
+          cell.appendChild(portalDiv);
+        } else if (state.toolMode === 'add-portal') {
+          const preview = document.createElement('div');
+          preview.className = 'preview-circle';
+          cell.appendChild(preview);
+        }
+
+        cell.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          handleCellClick(loc.id, row, col);
+        });
+
+        grid.appendChild(cell);
+      }
+
+      locDiv.appendChild(grid);
+      return locDiv;
+    }
+
+    // Переименование локации
+    function startRename(loc, nameSpan) {
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'location-name-input';
+      input.value = loc.name;
+      input.maxLength = 40;
+
+      const originalNode = nameSpan;
+      originalNode.replaceWith(input);
+      input.focus();
+      input.select();
+
+      let finished = false;
+      const finish = (save) => {
+        if (finished) return;
+        finished = true;
+        if (save) {
+          const newName = input.value.trim();
+          if (newName) loc.name = newName;
+        }
+        render();
+      };
+
+      input.addEventListener('blur', () => finish(true));
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          finish(true);
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          finish(false);
+        }
+        // Останавливаем всплытие, чтобы глобальные хоткеи не срабатывали
+        e.stopPropagation();
+      });
+      // Блокируем перетаскивание во время редактирования
+      input.addEventListener('mousedown', (e) => e.stopPropagation());
+    }
+
+    function render() {
+      document.querySelectorAll('.btn-tool').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.mode === state.toolMode);
+      });
+
+      const selector = document.getElementById('portalTypeSelector');
+      selector.style.display = state.toolMode === 'add-portal' ? 'flex' : 'none';
+
+      document.querySelectorAll('.portal-type-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.type === state.portalType);
+      });
+
+      const statusText = document.getElementById('statusText');
+      if (state.toolMode === 'connect' && state.connectFrom) {
+        const fromPortal = state.portals.find(p => p.id === state.connectFrom);
+        if (fromPortal?.type === 'one-way') {
+          statusText.textContent = '👆 Кликните по другой локации';
+        } else {
+          statusText.textContent = '👆 Выберите другой ⇄ переход';
+        }
+      } else if (state.toolMode === 'connect') {
+        statusText.textContent = '👆 Выберите переход для связи';
+      } else if (state.toolMode === 'add-portal') {
+        statusText.textContent = '📌 Кликните на клетку';
+      } else if (state.toolMode === 'delete') {
+        statusText.textContent = '⚠️ Кликните на элемент для удаления';
+      } else if (state.selection) {
+        statusText.textContent = `✓ Выделено | Del— удалить | F2 — переименовать | Esc — снять`;
+      } else {
+        statusText.textContent = '✋ Масштабирование — колесико мыши, перетаскивание — ПКМ';
+      }
+
+      const canvas = document.getElementById('canvas');
+      canvas.className = 'canvas';
+      if (state.toolMode === 'select') {
+        canvas.classList.add('select-mode');
+        if (state.dragging) canvas.classList.add('dragging');
+        else canvas.classList.add('grab-mode');
+      } else {
+        canvas.classList.add('crosshair-mode');
+      }
+
+      document.getElementById('svgOverlay').classList.toggle('delete-mode', state.toolMode === 'delete');
+
+      document.getElementById('locationCount').textContent = `Локаций: ${state.locations.length}`;
+      document.getElementById('portalCount').textContent = `Переходов: ${state.portals.length}`;
+      document.getElementById('connectionCount').textContent = `Связей: ${state.connections.length}`;
+
+      document.getElementById('emptyState').style.display = state.locations.length === 0 ? 'flex' : 'none';
+
+      const container = document.getElementById('locationsContainer');
+      container.innerHTML = '';
+      state.locations.forEach(loc => {
+        container.appendChild(renderLocation(loc));
+      });
+
+      renderConnections();
+    }
+
+    async function exportMap(format) {
+      if (state.locations.length === 0) {
+        alert('Нечего экспортировать: добавьте хотя бы одну локацию.');
+        return;
+      }
+
+      const btn = format === 'png' ? document.getElementById('exportPngBtn') : document.getElementById('exportPdfBtn');
+      const originalText = btn.textContent;
+      btn.textContent = '⏳ Обработка...';
+      btn.disabled = true;
+
+      try {
+        const savedScale = state.scale;
+        const savedPanX = state.panX;
+        const savedPanY = state.panY;
+        const savedSelection = state.selection;
+
+        state.selection = null;
+        render();
+
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        state.locations.forEach(loc => {
+          minX = Math.min(minX, loc.x);
+          minY = Math.min(minY, loc.y);
+          maxX = Math.max(maxX, loc.x + GRID_COLS * CELL_SIZE);
+          maxY = Math.max(maxY, loc.y + HEADER_HEIGHT + GRID_ROWS * CELL_SIZE);
+        });
+
+        const padding = 60;
+        minX -= padding;
+        minY -= padding;
+        maxX += padding;
+        maxY += padding;
+
+        const contentWidth = maxX - minX;
+        const contentHeight = maxY - minY;
+
+        const canvasInner = document.getElementById('canvasInner');
+        const originalWidth = canvasInner.style.width;
+        const originalHeight = canvasInner.style.height;
+
+        canvasInner.style.width = `${contentWidth}px`;
+        canvasInner.style.height = `${contentHeight}px`;
+        
+        state.locations.forEach(loc => {
+          loc.x -= minX;
+          loc.y -= minY;
+        });
+        
+        renderConnections();
+
+        state.scale = 1;
+        state.panX = 0;
+        state.panY = 0;
+        updateTransform();
+
+        document.body.classList.add('exporting');
+
+        await new Promise(resolve => setTimeout(resolve, 150));
+
+        const canvas = await html2canvas(canvasInner, {
+          backgroundColor: '#bdb3b2',
+          scale: 2,
+          useCORS: true,
+          logging: false,
+          width: contentWidth,
+          height: contentHeight
+        });
+
+        document.body.classList.remove('exporting');
+        state.locations.forEach(loc => {
+          loc.x += minX;
+          loc.y += minY;
+        });
+        state.scale = savedScale;
+        state.panX = savedPanX;
+        state.panY = savedPanY;
+        state.selection = savedSelection;
+        canvasInner.style.width = originalWidth || '3000px';
+        canvasInner.style.height = originalHeight || '2000px';
+        updateTransform();
+        render();
+
+        if (format === 'png') {
+          const link = document.createElement('a');
+          link.download = `map-territories-${Date.now()}.png`;
+          link.href = canvas.toDataURL('image/png');
+          link.click();
+        } else if (format === 'pdf') {
+          const { jsPDF } = window.jspdf;
+          const orientation = contentWidth > contentHeight ? 'l' : 'p';
+          const pdf = new jsPDF({
+            orientation: orientation,
+            unit: 'px',
+            format: [contentWidth, contentHeight]
+          });
+          
+          const imgData = canvas.toDataURL('image/jpeg', 0.95);
+          pdf.addImage(imgData, 'JPEG', 0, 0, contentWidth, contentHeight);
+          pdf.save(`map-territories-${Date.now()}.pdf`);
+        }
+
+      } catch (error) {
+        console.error('Ошибка экспорта:', error);
+        alert('Произошла ошибка при экспорте. Проверьте консоль.');
+      } finally {
+        btn.textContent = originalText;
+        btn.disabled = false;
+      }
+    }
+
+    document.getElementById('addLocationBtn').addEventListener('click', addLocation);
+    document.getElementById('createFirstBtn').addEventListener('click', addLocation);
+    
+    document.getElementById('exportPngBtn').addEventListener('click', () => exportMap('png'));
+    document.getElementById('exportPdfBtn').addEventListener('click', () => exportMap('pdf'));
+
+    document.querySelectorAll('.btn-tool').forEach(btn => {
+      btn.addEventListener('click', () => setToolMode(btn.dataset.mode));
+    });
+
+    document.querySelectorAll('.portal-type-btn').forEach(btn => {
+      btn.addEventListener('click', () => setPortalType(btn.dataset.type));
+    });
+
+    document.addEventListener('keydown', (e) => {
+      // Игнорируем хоткеи, если идёт редактирование имени
+      if (document.activeElement && document.activeElement.classList.contains('location-name-input')) {
+        return;
+      }
+
+      if (e.key === 'Delete' || (e.ctrlKey && (e.key === 'x' || e.key === 'X'))) {
+        if (state.selection) {
+          e.preventDefault();
+          deleteSelected();
+        }
+      } else if (e.key === 'Escape') {
+        clearSelection();
+      } else if ((e.key === 'F2' || e.key === 'Enter') && state.selection?.type === 'location') {
+        e.preventDefault();
+        const loc = state.locations.find(l => l.id === state.selection.id);
+        if (loc) {
+          const nameSpan = document.querySelector(`.location.selected .location-name`);
+          if (nameSpan) startRename(loc, nameSpan);
+        }
+      }
+    });
+
+    window.addEventListener('mousemove', (e) => {
+      if (state.isPanning) {
+        const dx = e.clientX - state.lastMouseX;
+        const dy = e.clientY - state.lastMouseY;
+        state.panX += dx;
+        state.panY += dy;
+        state.lastMouseX = e.clientX;
+        state.lastMouseY = e.clientY;
+        updateTransform();
+      } else if (state.dragging) {
+        const pos = screenToCanvas(e.clientX, e.clientY);
+        const loc = state.locations.find(l => l.id === state.dragging.locationId);
+        if (loc) {
+          loc.x = Math.max(0, pos.x - state.dragging.offsetX);
+          loc.y = Math.max(0, pos.y - state.dragging.offsetY);
+          renderConnections();
+          const locDiv = document.querySelector(`.location.selected`);
+          if (locDiv) {
+            locDiv.style.left = `${loc.x}px`;
+            locDiv.style.top = `${loc.y}px`;
+          } else {
+            render();
+          }
+        }
+      }
+    });
+
+    window.addEventListener('mouseup', () => {
+      if (state.isPanning) {
+        state.isPanning = false;
+        document.getElementById('canvas').classList.remove('panning');
+      }
+      if (state.dragging) {
+        state.dragging = null;
+        document.getElementById('canvas').classList.remove('dragging');
+        render();
+      }
+    });
+
+    const canvas = document.getElementById('canvas');
+    const canvasInner = document.getElementById('canvasInner');
+
+    canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const zoomIntensity = 0.1;
+      const delta = e.deltaY > 0 ? -zoomIntensity : zoomIntensity;
+      const newScale = Math.min(Math.max(0.2, state.scale + delta), 3.0);
+
+      const rect = canvas.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+
+      const worldX = (mouseX - state.panX) / state.scale;
+      const worldY = (mouseY - state.panY) / state.scale;
+
+      state.panX = mouseX - worldX * newScale;
+      state.panY = mouseY - worldY * newScale;
+      state.scale = newScale;
+
+      updateTransform();
+    }, { passive: false });
+
+    canvas.addEventListener('mousedown', (e) => {
+      if (e.button === 1) {
+        e.preventDefault();
+        state.isPanning = true;
+        state.lastMouseX = e.clientX;
+        state.lastMouseY = e.clientY;
+        canvas.classList.add('panning');
+      }
+    });
+
+    canvasInner.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      if (e.target.closest('.location-name-input')) return;
+      const isOnLocation = !!e.target.closest('.location');
+      const isOnConnection = e.target.tagName === 'path';
+      
+      if (!isOnLocation && !isOnConnection) {
+        e.preventDefault();
+        state.isPanning = true;
+        state.lastMouseX = e.clientX;
+        state.lastMouseY = e.clientY;
+        canvas.classList.add('panning');
+      }
+    });
+
+    canvasInner.addEventListener('click', (e) => {
+      if (state.toolMode !== 'select') return;
+      if (e.target.closest('.location-name-input')) return;
+      const isOnLocation = !!e.target.closest('.location');
+      const isOnConnection = e.target.tagName === 'path';
+      
+      if (!isOnLocation && !isOnConnection && !state.isPanning) {
+        clearSelection();
+      }
+    });
+
+    canvas.addEventListener('auxclick', (e) => {
+      if (e.button === 1) e.preventDefault();
+    });
+
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+    render();
+    updateTransform();
+  </script>
+</body>
+</html>

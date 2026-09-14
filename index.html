@@ -240,6 +240,12 @@
     }
     .cell.white-cell { background-color: #4a4640 !important; outline: 1px dashed rgba(255,255,255,0.35); outline-offset: -1px; }
 
+    .cell-coord {
+      position: absolute; top: 1px; left: 2px;
+      font-size: 6px; line-height: 1; font-family: monospace;
+      color: rgba(0,0,0,0.28); pointer-events: none; z-index: 0;
+    }
+
     .portal {
       position: relative; width: 100%; height: 100%;
       display: flex; align-items: center; justify-content: center;
@@ -325,6 +331,7 @@
     .exporting .image-item .resize-handle { display: none !important; }
     .exporting .image-item { border-color: transparent !important; }
     .exporting .text-item { border-style: dashed !important; border-color: #9C9392 !important; }
+    .exporting .cell-coord { display: none !important; }
 
     /* --- Изображения --- */
     .image-item {
@@ -455,8 +462,10 @@
         <span id="portalCount">Переходов: 0</span>
         <span>|</span>
         <span id="connCountStat">Связей: 0</span>
+        <span>|</span>
+        <span id="creditText">by Высь [1545056]</span>
       </div>
-      <div class="legend-hint">Совет: клик по названию локации 2 раза — переименовать. Отметьте чекбокс тега и кликните по локации, чтобы покрасить её. Ctrl+C / Ctrl+V — копировать/вставить локацию, картинку или текст. Ctrl+X или Delete — удалить.</div>
+      <div class="legend-hint">Совет: клик по названию локации 2 раза — переименовать. Отметьте чекбокс тега и кликните по локации, чтобы покрасить её. Ctrl+C / Ctrl+V — копировать/вставить, Ctrl+Z — отменить, Ctrl+X или Delete — удалить.</div>
     </div>
 
     <div class="canvas select-mode grab-mode" id="canvas">
@@ -472,7 +481,7 @@
           <div class="empty-state-icon">🗺️</div>
           <h2 class="empty-state-title">Конструктор карт территорий</h2>
           <p class="empty-state-text">
-            Создавайте компактные локации 10×6 клеток, размещайте переходы и соединяйте их. Холст безграничен — просто перетаскивайте фон в любую сторону.
+            Создавайте компактные локации 10×6 клеток, размещайте переходы и соединяйте их. Холст очень большой — перетаскивайте фон в любую сторону.
           </p>
           <div class="instructions">
             <p>🔍 <b>Выбор</b> — выделение и перетаскивание</p>
@@ -484,7 +493,7 @@
             <p>🏷 <b>Теги</b> — отметьте чекбокс тега в легенде и кликайте по локациям, чтобы покрасить их</p>
             <p>🗑 <b>Удалить</b> — клик по элементу, или <span class="kbd">Delete</span> / <span class="kbd">Ctrl+X</span></p>
             <p>🖼/📝 — добавляйте свои изображения и текстовые подписи, перетаскивайте как угодно, изображения можно менять в размере за уголок</p>
-            <p><span class="kbd">Ctrl+C</span> / <span class="kbd">Ctrl+V</span> — копировать и вставить локацию, картинку или текст</p>
+            <p><span class="kbd">Ctrl+C</span> / <span class="kbd">Ctrl+V</span> — копировать/вставить, <span class="kbd">Ctrl+Z</span> — отменить последнее действие</p>
           </div>
           <button class="create-btn" id="createFirstBtn">+ Создать первую локацию</button>
           <div class="zoom-hint">💡 Колесико / щипок: масштаб | Перетаскивание фона (пальцем или ЛКМ): перемещение | <span class="kbd">Esc</span>: снять выделение</div>
@@ -525,6 +534,21 @@
     const HEADER_HEIGHT = 28;
     const CANVAS_SIZE = 40000;
 
+    // Рабочая область ограничена не потому, что это "красиво", а потому что
+    // GPU-слой композитинга (из-за will-change: transform на всём холсте)
+    // считается по общей ширине/высоте содержимого. Если утащить локацию
+    // на десятки тысяч пикселей, слой может превысить лимит текстуры
+    // видеокарты (особенно на мобильных, там лимит часто 4096-8192px) —
+    // и после этого клики по элементам внутри такого слоя перестают
+    // прицельно попадать в нужный DOM-узел. Поэтому держим мир в разумных,
+    // но всё равно очень просторных границах.
+    const WORLD_HALF = 8000;
+    function clampCoord(v) {
+      return Math.round(Math.max(-WORLD_HALF, Math.min(WORLD_HALF, v)));
+    }
+    const MASK_MIN = -20000;
+    const MASK_SIZE = 40000;
+
     const PORTAL_COLORS = {
       'bidirectional': '#6ecdb8',
       'one-way': '#b88fd4',
@@ -556,9 +580,55 @@
       return `id_${state.idCounter}_${Date.now()}_${Math.floor(Math.random()*1000)}`;
     }
 
+    // ---------- Отмена действия (Ctrl+Z) ----------
+    const UNDO_LIMIT = 50;
+    let undoStack = [];
+
+    function snapshotState() {
+      return {
+        locations: JSON.parse(JSON.stringify(state.locations)),
+        portals: JSON.parse(JSON.stringify(state.portals)),
+        connections: JSON.parse(JSON.stringify(state.connections)),
+        images: JSON.parse(JSON.stringify(state.images)),
+        texts: JSON.parse(JSON.stringify(state.texts)),
+        whiteCells: JSON.parse(JSON.stringify(state.whiteCells))
+      };
+    }
+
+    function pushUndo() {
+      undoStack.push(snapshotState());
+      if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+    }
+
+    function undo() {
+      if (undoStack.length === 0) return;
+      const snap = undoStack.pop();
+      state.locations = snap.locations;
+      state.portals = snap.portals;
+      state.connections = snap.connections;
+      state.images = snap.images;
+      state.texts = snap.texts;
+      state.whiteCells = snap.whiteCells;
+      state.selection = null;
+      state.multiSelection.clear();
+      state.connectFrom = null;
+      closeTagPopup();
+      render();
+    }
+
     function isEditingText() {
       const el = document.activeElement;
-      return el && (el.classList.contains('location-name-input') || el.tagName === 'TEXTAREA' || el.tagName === 'INPUT');
+      if (!el) return false;
+      // Важно: чекбоксы тегов и скрытые <input type="file"> — тоже теги
+      // INPUT, но текст в них не редактируется. Раньше проверка блокировала
+      // ВСЕ горячие клавиши (включая Ctrl+C/V/Z), если фокус случайно
+      // оставался на таком элементе после клика — например, после выбора
+      // файла в диалоге загрузки картинки/JSON. Поэтому здесь отдельно
+      // отфильтровываем именно текстовые поля.
+      if (el.classList.contains('location-name-input')) return true;
+      if (el.tagName === 'TEXTAREA') return true;
+      if (el.tagName === 'INPUT' && (el.type === 'text' || el.type === 'search')) return true;
+      return false;
     }
 
     function getPortalCenter(portal) {
@@ -643,12 +713,13 @@
     }
 
     function addLocation() {
+      pushUndo();
       const center = getViewCenter();
       const newLoc = {
         id: genId(),
         name: `Локация ${state.locations.length + 1}`,
-        x: Math.round(center.x - (GRID_COLS * CELL_SIZE) / 2),
-        y: Math.round(center.y - (GRID_ROWS * CELL_SIZE + HEADER_HEIGHT) / 2),
+        x: clampCoord(center.x - (GRID_COLS * CELL_SIZE) / 2),
+        y: clampCoord(center.y - (GRID_ROWS * CELL_SIZE + HEADER_HEIGHT) / 2),
         tags: []
       };
       state.locations.push(newLoc);
@@ -656,6 +727,7 @@
     }
 
     function deleteLocation(locId) {
+      pushUndo();
       const locPortals = state.portals.filter(p => p.locationId === locId);
       const portalIds = locPortals.map(p => p.id);
 
@@ -679,6 +751,7 @@
     }
 
     function deletePortal(portalId) {
+      pushUndo();
       state.connections = state.connections.filter(c =>
         c.fromPortalId !== portalId && c.toPortalId !== portalId
       );
@@ -692,12 +765,14 @@
     }
 
     function deleteImage(id) {
+      pushUndo();
       state.images = state.images.filter(i => i.id !== id);
       if (state.selection?.type === 'image' && state.selection.id === id) state.selection = null;
       render();
     }
 
     function deleteText(id) {
+      pushUndo();
       state.texts = state.texts.filter(t => t.id !== id);
       if (state.selection?.type === 'text' && state.selection.id === id) state.selection = null;
       render();
@@ -705,9 +780,23 @@
 
     function deleteSelected() {
       if (state.multiSelection.size > 0) {
+        pushUndo();
         const ids = Array.from(state.multiSelection);
-        ids.forEach(locId => deleteLocation(locId));
+        ids.forEach(locId => {
+          const locPortals = state.portals.filter(p => p.locationId === locId);
+          const portalIds = locPortals.map(p => p.id);
+          state.connections = state.connections.filter(c => {
+            if (portalIds.includes(c.fromPortalId)) return false;
+            if (c.toPortalId && portalIds.includes(c.toPortalId)) return false;
+            if (c.to && c.to.type === 'location' && c.to.id === locId) return false;
+            return true;
+          });
+          state.portals = state.portals.filter(p => p.locationId !== locId);
+          state.whiteCells = state.whiteCells.filter(w => w.locationId !== locId);
+        });
+        state.locations = state.locations.filter(l => !state.multiSelection.has(l.id));
         state.multiSelection.clear();
+        state.selection = null;
         render();
         return;
       }
@@ -723,6 +812,7 @@
     }
 
     function toggleWhiteCell(locationId, row, col) {
+      pushUndo();
       const existing = getWhiteCell(locationId, row, col);
       if (existing) {
         state.whiteCells = state.whiteCells.filter(w => w !== existing);
@@ -736,6 +826,7 @@
       if (!tagKey) return;
       const loc = state.locations.find(l => l.id === locId);
       if (!loc) return;
+      pushUndo();
       if (loc.tags.includes(tagKey)) loc.tags = loc.tags.filter(t => t !== tagKey);
       else loc.tags.push(tagKey);
       render();
@@ -761,6 +852,7 @@
       if (state.toolMode === 'add-portal') {
         if (cellPortal) return;
         if (getWhiteCell(locationId, row, col)) return;
+        pushUndo();
         state.portals.push({ id: genId(), locationId, row, col, type: state.portalType });
         render();
       } else if (state.toolMode === 'white') {
@@ -784,6 +876,7 @@
                   (c.fromPortalId === cellPortal.id && c.toPortalId === state.connectFrom)
                 );
                 if (!exists) {
+                  pushUndo();
                   state.connections.push({ id: genId(), fromPortalId: state.connectFrom, toPortalId: cellPortal.id });
                 }
               }
@@ -806,6 +899,7 @@
                 c.to && c.to.type === 'location' && c.to.id === locationId
               );
               if (!exists) {
+                pushUndo();
                 state.connections.push({ id: genId(), fromPortalId: state.connectFrom, to: { type: 'location', id: locationId } });
               }
               state.connectFrom = null;
@@ -825,6 +919,7 @@
     }
 
     function deleteConnection(connId) {
+      pushUndo();
       state.connections = state.connections.filter(c => c.id !== connId);
       render();
     }
@@ -870,10 +965,10 @@
         cb.type = 'checkbox';
         cb.checked = loc.tags.includes(key);
         cb.addEventListener('change', () => {
+          pushUndo();
           if (cb.checked) { if (!loc.tags.includes(key)) loc.tags.push(key); }
           else { loc.tags = loc.tags.filter(t => t !== key); }
           render();
-          // popup переживает render(), т.к. висит на body — просто актуализируем чекбоксы уже не нужно, попап остаётся как есть
         });
         const dot = document.createElement('span');
         dot.className = 'tag-color-dot';
@@ -912,6 +1007,7 @@
 
     // ---------- Изображения ----------
     function addImageFromDataUrl(dataUrl, naturalW, naturalH) {
+      pushUndo();
       const center = getViewCenter();
       let w = 140, h = 140;
       if (naturalW && naturalH) {
@@ -919,25 +1015,27 @@
         if (ratio >= 1) { w = 160; h = Math.round(160 / ratio); }
         else { h = 160; w = Math.round(160 * ratio); }
       }
-      const img = { id: genId(), dataUrl, x: Math.round(center.x - w / 2), y: Math.round(center.y - h / 2), width: w, height: h };
+      const img = { id: genId(), dataUrl, x: clampCoord(center.x - w / 2), y: clampCoord(center.y - h / 2), width: w, height: h };
       state.images.push(img);
       setSelection('image', img.id);
     }
 
     function addText() {
+      pushUndo();
       const center = getViewCenter();
-      const t = { id: genId(), content: 'Текст', x: Math.round(center.x - 60), y: Math.round(center.y - 20) };
+      const t = { id: genId(), content: 'Текст', x: clampCoord(center.x - 60), y: clampCoord(center.y - 20) };
       state.texts.push(t);
       setSelection('text', t.id);
-      setTimeout(() => startTextEdit(t.id), 0);
+      setTimeout(() => startTextEdit(t.id, true), 0);
     }
 
-    function startTextEdit(textId) {
+    function startTextEdit(textId, skipUndo) {
       const wrap = document.querySelector(`[data-text-id="${textId}"]`);
       if (!wrap) return;
       if (wrap.querySelector('textarea')) return; // уже редактируется
       const t = state.texts.find(x => x.id === textId);
       if (!t) return;
+      if (!skipUndo) pushUndo();
       wrap.innerHTML = '';
       const textarea = document.createElement('textarea');
       textarea.value = t.content;
@@ -980,23 +1078,24 @@
 
     function pasteClipboard() {
       if (!state.clipboard) return;
+      pushUndo();
       const OFFSET = 30;
       if (state.clipboard.type === 'location') {
         const { loc, portals, whites } = state.clipboard;
         const newLocId = genId();
-        const newLoc = { ...loc, id: newLocId, x: loc.x + OFFSET, y: loc.y + OFFSET, name: loc.name + ' (копия)', tags: [...loc.tags] };
+        const newLoc = { ...loc, id: newLocId, x: clampCoord(loc.x + OFFSET), y: clampCoord(loc.y + OFFSET), name: loc.name + ' (копия)', tags: [...loc.tags] };
         state.locations.push(newLoc);
         portals.forEach(p => state.portals.push({ ...p, id: genId(), locationId: newLocId }));
         whites.forEach(w => state.whiteCells.push({ ...w, id: genId(), locationId: newLocId }));
         setSelection('location', newLocId);
       } else if (state.clipboard.type === 'image') {
         const d = state.clipboard.data;
-        const newImg = { ...d, id: genId(), x: d.x + OFFSET, y: d.y + OFFSET };
+        const newImg = { ...d, id: genId(), x: clampCoord(d.x + OFFSET), y: clampCoord(d.y + OFFSET) };
         state.images.push(newImg);
         setSelection('image', newImg.id);
       } else if (state.clipboard.type === 'text') {
         const d = state.clipboard.data;
-        const newText = { ...d, id: genId(), x: d.x + OFFSET, y: d.y + OFFSET };
+        const newText = { ...d, id: genId(), x: clampCoord(d.x + OFFSET), y: clampCoord(d.y + OFFSET) };
         state.texts.push(newText);
         setSelection('text', newText.id);
       }
@@ -1023,23 +1122,92 @@
       URL.revokeObjectURL(url);
     }
 
-    function importProjectJson(file) {
+    // Импорт ДОБАВЛЯЕТ содержимое файла к текущему холсту (не заменяет его),
+    // поэтому можно загрузить несколько файлов подряд или выбрать сразу
+    // несколько в диалоге — id локаций/переходов внутри каждого файла
+    // переписываются заново, чтобы избежать конфликтов с уже существующими
+    // на холсте объектами и между несколькими одновременно загружаемыми
+    // файлами.
+    function importProjectFiles(fileList) {
+      Array.from(fileList).forEach(file => importSingleProjectJson(file));
+    }
+
+    function importSingleProjectJson(file) {
       const reader = new FileReader();
       reader.onload = () => {
         try {
           const data = JSON.parse(reader.result);
-          state.locations = Array.isArray(data.locations) ? data.locations.map(l => ({ tags: [], ...l })) : [];
-          state.portals = Array.isArray(data.portals) ? data.portals : [];
-          state.connections = Array.isArray(data.connections) ? data.connections : [];
-          state.images = Array.isArray(data.images) ? data.images : [];
-          state.texts = Array.isArray(data.texts) ? data.texts : [];
-          state.whiteCells = Array.isArray(data.whiteCells) ? data.whiteCells : [];
-          state.selection = null;
-          state.multiSelection.clear();
-          state.connectFrom = null;
+          pushUndo();
+
+          const locIdMap = {};
+          const portalIdMap = {};
+
+          const importedLocations = (Array.isArray(data.locations) ? data.locations : []).map(l => {
+            const newId = genId();
+            locIdMap[l.id] = newId;
+            return {
+              id: newId,
+              name: typeof l.name === 'string' ? l.name : 'Локация',
+              x: clampCoord(Number(l.x) || 0),
+              y: clampCoord(Number(l.y) || 0),
+              tags: Array.isArray(l.tags) ? l.tags.filter(t => TAGS[t]) : []
+            };
+          });
+
+          const importedPortals = (Array.isArray(data.portals) ? data.portals : [])
+            .filter(p => locIdMap[p.locationId])
+            .map(p => {
+              const newId = genId();
+              portalIdMap[p.id] = newId;
+              return { id: newId, locationId: locIdMap[p.locationId], row: p.row, col: p.col, type: PORTAL_COLORS[p.type] ? p.type : 'bidirectional' };
+            });
+
+          const importedWhiteCells = (Array.isArray(data.whiteCells) ? data.whiteCells : [])
+            .filter(w => locIdMap[w.locationId])
+            .map(w => ({ id: genId(), locationId: locIdMap[w.locationId], row: w.row, col: w.col }));
+
+          const importedConnections = (Array.isArray(data.connections) ? data.connections : [])
+            .map(c => {
+              const fromPortalId = portalIdMap[c.fromPortalId];
+              if (!fromPortalId) return null;
+              if (c.toPortalId) {
+                const toPortalId = portalIdMap[c.toPortalId];
+                if (!toPortalId) return null;
+                return { id: genId(), fromPortalId, toPortalId };
+              } else if (c.to && c.to.type === 'location' && locIdMap[c.to.id]) {
+                return { id: genId(), fromPortalId, to: { type: 'location', id: locIdMap[c.to.id] } };
+              }
+              return null;
+            })
+            .filter(Boolean);
+
+          const importedImages = (Array.isArray(data.images) ? data.images : []).map(img => ({
+            id: genId(),
+            dataUrl: img.dataUrl,
+            x: clampCoord(Number(img.x) || 0),
+            y: clampCoord(Number(img.y) || 0),
+            width: img.width || 140,
+            height: img.height || 140
+          }));
+
+          const importedTexts = (Array.isArray(data.texts) ? data.texts : []).map(t => ({
+            id: genId(),
+            content: typeof t.content === 'string' ? t.content : 'Текст',
+            x: clampCoord(Number(t.x) || 0),
+            y: clampCoord(Number(t.y) || 0)
+          }));
+
+          state.locations.push(...importedLocations);
+          state.portals.push(...importedPortals);
+          state.whiteCells.push(...importedWhiteCells);
+          state.connections.push(...importedConnections);
+          state.images.push(...importedImages);
+          state.texts.push(...importedTexts);
+
           render();
         } catch (err) {
-          alert('Не удалось прочитать файл проекта: файл повреждён или имеет неверный формат.');
+          console.error(err);
+          alert(`Не удалось прочитать файл «${file.name}»: файл повреждён или имеет неверный формат.`);
         }
       };
       reader.readAsText(file);
@@ -1109,14 +1277,14 @@
             const mask = document.createElementNS(SVG_NS, 'mask');
             mask.setAttribute('id', maskId);
             mask.setAttribute('maskUnits', 'userSpaceOnUse');
-            mask.setAttribute('x', '0');
-            mask.setAttribute('y', '0');
-            mask.setAttribute('width', String(CANVAS_SIZE));
-            mask.setAttribute('height', String(CANVAS_SIZE));
+            mask.setAttribute('x', String(MASK_MIN));
+            mask.setAttribute('y', String(MASK_MIN));
+            mask.setAttribute('width', String(MASK_SIZE));
+            mask.setAttribute('height', String(MASK_SIZE));
 
             const maskBg = document.createElementNS(SVG_NS, 'rect');
-            maskBg.setAttribute('x', '0'); maskBg.setAttribute('y', '0');
-            maskBg.setAttribute('width', String(CANVAS_SIZE)); maskBg.setAttribute('height', String(CANVAS_SIZE));
+            maskBg.setAttribute('x', String(MASK_MIN)); maskBg.setAttribute('y', String(MASK_MIN));
+            maskBg.setAttribute('width', String(MASK_SIZE)); maskBg.setAttribute('height', String(MASK_SIZE));
             maskBg.setAttribute('fill', 'white');
             mask.appendChild(maskBg);
 
@@ -1136,7 +1304,7 @@
         const path = document.createElementNS(SVG_NS, 'path');
         path.setAttribute('d', pathD);
         path.setAttribute('stroke', lineColor);
-        path.setAttribute('stroke-width', '2');
+        path.setAttribute('stroke-width', '4');
         path.setAttribute('fill', 'none');
         path.setAttribute('opacity', '0.85');
         path.setAttribute('stroke-linecap', 'round');
@@ -1151,7 +1319,7 @@
           const hitbox = document.createElementNS(SVG_NS, 'path');
           hitbox.setAttribute('d', pathD);
           hitbox.setAttribute('stroke', 'transparent');
-          hitbox.setAttribute('stroke-width', '14');
+          hitbox.setAttribute('stroke-width', '16');
           hitbox.setAttribute('fill', 'none');
           hitbox.style.cursor = 'pointer';
           hitbox.style.pointerEvents = 'stroke';
@@ -1166,6 +1334,7 @@
       if (e.button !== 0 && e.pointerType === 'mouse') return;
       e.preventDefault();
       e.stopPropagation();
+      pushUndo();
       const pos = screenToCanvas(e.clientX, e.clientY);
 
       if (state.multiSelection.size > 0 && state.multiSelection.has(loc.id)) {
@@ -1285,7 +1454,10 @@
             const exists = state.connections.find(c =>
               c.fromPortalId === state.connectFrom && c.to && c.to.type === 'location' && c.to.id === loc.id
             );
-            if (!exists) state.connections.push({ id: genId(), fromPortalId: state.connectFrom, to: { type: 'location', id: loc.id } });
+            if (!exists) {
+              pushUndo();
+              state.connections.push({ id: genId(), fromPortalId: state.connectFrom, to: { type: 'location', id: loc.id } });
+            }
             state.connectFrom = null;
             render();
           }
@@ -1323,6 +1495,13 @@
           cell.style.backgroundColor = bg;
         }
         cell.style.setProperty('--portal-color', PORTAL_COLORS[state.portalType]);
+
+        // Координатная подпись клетки (1×1 … 6×10) — только для удобства
+        // разметки, скрывается автоматически при экспорте в PNG.
+        const coordLabel = document.createElement('span');
+        coordLabel.className = 'cell-coord';
+        coordLabel.textContent = `${row + 1}×${col + 1}`;
+        cell.appendChild(coordLabel);
 
         if (portal) {
           const portalDiv = document.createElement('div');
@@ -1366,6 +1545,7 @@
     }
 
     function startRename(loc, nameSpan) {
+      pushUndo();
       const input = document.createElement('input');
       input.type = 'text';
       input.className = 'location-name-input';
@@ -1425,6 +1605,7 @@
         handle.addEventListener('pointerdown', (e) => {
           if (e.button !== 0 && e.pointerType === 'mouse') return;
           e.preventDefault(); e.stopPropagation();
+          pushUndo();
           state.dragging = {
             type: 'image-resize', id: img.id,
             startClientX: e.clientX, startClientY: e.clientY,
@@ -1441,6 +1622,7 @@
         if (e.target.closest('.resize-handle')) return;
         if (e.button !== 0 && e.pointerType === 'mouse') return;
         e.preventDefault(); e.stopPropagation();
+        pushUndo();
         const pos = screenToCanvas(e.clientX, e.clientY);
         state.dragging = { type: 'image', id: img.id, offsetX: pos.x - img.x, offsetY: pos.y - img.y };
         setSelection('image', img.id);
@@ -1481,6 +1663,7 @@
         if (state.toolMode === 'delete' || e.target.tagName === 'TEXTAREA') return;
         if (e.button !== 0 && e.pointerType === 'mouse') return;
         e.preventDefault(); e.stopPropagation();
+        pushUndo();
         const pos = screenToCanvas(e.clientX, e.clientY);
         state.dragging = { type: 'text', id: t.id, offsetX: pos.x - t.x, offsetY: pos.y - t.y };
         setSelection('text', t.id);
@@ -1653,13 +1836,9 @@
         render();
         document.body.classList.add('exporting');
 
-        // Снимаем ограничение overflow:hidden с холста и body, чтобы контент
-        // размером больше видимой области окна не обрезался при захвате.
         canvasEl.style.overflow = 'visible';
         document.body.style.overflow = 'visible';
 
-        // Ждём пару кадров отрисовки перед снимком — надёжнее фиксированной
-        // задержки, особенно когда объектов много и перерисовка тяжелее.
         await new Promise(resolve => requestAnimationFrame(resolve));
         await new Promise(resolve => requestAnimationFrame(resolve));
         await new Promise(resolve => setTimeout(resolve, 80));
@@ -1711,6 +1890,8 @@
     document.getElementById('addImageBtn').addEventListener('click', () => imageFileInput.click());
     imageFileInput.addEventListener('change', () => {
       const file = imageFileInput.files[0];
+      imageFileInput.value = '';
+      imageFileInput.blur(); // чтобы фокус не оставался на скрытом input и не блокировал горячие клавиши
       if (!file) return;
       const reader = new FileReader();
       reader.onload = () => {
@@ -1721,15 +1902,15 @@
         probe.src = dataUrl;
       };
       reader.readAsDataURL(file);
-      imageFileInput.value = '';
     });
 
     const projectFileInput = document.getElementById('projectFileInput');
     document.getElementById('importJsonBtn').addEventListener('click', () => projectFileInput.click());
     projectFileInput.addEventListener('change', () => {
-      const file = projectFileInput.files[0];
-      if (file) importProjectJson(file);
+      const files = projectFileInput.files;
+      if (files && files.length > 0) importProjectFiles(files);
       projectFileInput.value = '';
+      projectFileInput.blur();
     });
 
     document.querySelectorAll('.btn-tool').forEach(btn => btn.addEventListener('click', () => setToolMode(btn.dataset.mode)));
@@ -1743,6 +1924,9 @@
 
       if (e.key === 'Delete' || (ctrl && (e.key === 'x' || e.key === 'X'))) {
         if (state.selection || state.multiSelection.size > 0) { e.preventDefault(); deleteSelected(); }
+      } else if (ctrl && (e.key === 'z' || e.key === 'Z') && !e.shiftKey) {
+        e.preventDefault();
+        undo();
       } else if (ctrl && (e.key === 'c' || e.key === 'C')) {
         if (state.selection) { e.preventDefault(); copySelection(); }
       } else if (ctrl && (e.key === 'v' || e.key === 'V')) {
@@ -1885,7 +2069,7 @@
           const pos = screenToCanvas(e.clientX, e.clientY);
           const loc = state.locations.find(l => l.id === d.id);
           if (loc) {
-            loc.x = pos.x - d.offsetX; loc.y = pos.y - d.offsetY;
+            loc.x = clampCoord(pos.x - d.offsetX); loc.y = clampCoord(pos.y - d.offsetY);
             renderConnections();
             const locDiv = document.querySelector('.location.selected');
             if (locDiv) { locDiv.style.left = `${loc.x}px`; locDiv.style.top = `${loc.y}px`; } else render();
@@ -1897,7 +2081,7 @@
           d.ids.forEach(id => {
             const loc = state.locations.find(l => l.id === id);
             const start = d.startPositions[id];
-            if (loc && start) { loc.x = start.x + dx; loc.y = start.y + dy; }
+            if (loc && start) { loc.x = clampCoord(start.x + dx); loc.y = clampCoord(start.y + dy); }
           });
           renderConnections();
           d.ids.forEach(id => {
@@ -1909,7 +2093,7 @@
           const pos = screenToCanvas(e.clientX, e.clientY);
           const img = state.images.find(i => i.id === d.id);
           if (img) {
-            img.x = pos.x - d.offsetX; img.y = pos.y - d.offsetY;
+            img.x = clampCoord(pos.x - d.offsetX); img.y = clampCoord(pos.y - d.offsetY);
             const el = document.querySelector('.image-item.selected');
             if (el) { el.style.left = `${img.x}px`; el.style.top = `${img.y}px`; } else render();
           }
@@ -1920,7 +2104,6 @@
             const dyScreen = e.clientY - d.startClientY;
             const dxWorld = dxScreen / state.scale;
             const dyWorld = dyScreen / state.scale;
-            // Двигаем в ту сторону, где движение мыши больше, сохраняя пропорции
             let newW;
             if (Math.abs(dxWorld) >= Math.abs(dyWorld)) {
               newW = d.startW + dxWorld;
@@ -1938,7 +2121,7 @@
           const pos = screenToCanvas(e.clientX, e.clientY);
           const t = state.texts.find(x => x.id === d.id);
           if (t) {
-            t.x = pos.x - d.offsetX; t.y = pos.y - d.offsetY;
+            t.x = clampCoord(pos.x - d.offsetX); t.y = clampCoord(pos.y - d.offsetY);
             const el = document.querySelector('.text-item.selected');
             if (el) { el.style.left = `${t.x}px`; el.style.top = `${t.y}px`; } else render();
           }

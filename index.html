@@ -433,9 +433,9 @@
       <div class="separator"></div>
       <button class="btn btn-export" id="exportPngBtn">💾 PNG</button>
       <button class="btn btn-export" id="exportJsonBtn" style="background-color:#4a8a7c;">📦 JSON</button>
-      <button class="btn btn-export" id="importJsonBtn" style="background-color:#8a7c4a;">📂 Открыть</button>
+      <button class="btn btn-export" id="importJsonBtn" style="background-color:#8a7c4a;" title="Добавить на холст одну или сразу несколько карт (JSON) — они не заменяют текущий холст, а добавляются рядом">📂 Загрузить</button>
       <input type="file" id="imageFileInput" accept="image/*">
-      <input type="file" id="projectFileInput" accept="application/json,.json">
+      <input type="file" id="projectFileInput" accept="application/json,.json" multiple>
 
       <div class="status" id="statusText">✋ Перетаскивайте локации</div>
     </div>
@@ -455,8 +455,6 @@
         <span id="portalCount">Переходов: 0</span>
         <span>|</span>
         <span id="connCountStat">Связей: 0</span>
-        <span>|</span>
-        <span id="connCountStat";>by Высь [1545056]</span>
       </div>
       <div class="legend-hint">Совет: клик по названию локации 2 раза — переименовать. Отметьте чекбокс тега и кликните по локации, чтобы покрасить её. Ctrl+C / Ctrl+V — копировать/вставить локацию, картинку или текст. Ctrl+X или Delete — удалить.</div>
     </div>
@@ -1626,8 +1624,11 @@
           maxX = Math.max(maxX, img.x + img.width); maxY = Math.max(maxY, img.y + img.height);
         });
         state.texts.forEach(t => {
+          const el = document.querySelector(`.text-item[data-text-id="${t.id}"]`);
+          const w = el ? el.offsetWidth : 160;
+          const h = el ? el.offsetHeight : 40;
           minX = Math.min(minX, t.x); minY = Math.min(minY, t.y);
-          maxX = Math.max(maxX, t.x + 160); maxY = Math.max(maxY, t.y + 40);
+          maxX = Math.max(maxX, t.x + w); maxY = Math.max(maxY, t.y + h);
         });
 
         const padding = 60;
@@ -1643,9 +1644,13 @@
         state.images.forEach(img => { img.x -= minX; img.y -= minY; });
         state.texts.forEach(t => { t.x -= minX; t.y -= minY; });
 
-        renderConnections();
         state.scale = 1; state.panX = 0; state.panY = 0;
         updateTransform();
+        // Важно: перерисовываем ПОЛНОСТЬЮ (локации/картинки/тексты + связи),
+        // а не только связи — иначе сами локации остаются на старых
+        // (несдвинутых) координатах и оказываются за пределами вырезанной
+        // под экспорт области, а линии связей "повисают в воздухе".
+        render();
         document.body.classList.add('exporting');
 
         // Снимаем ограничение overflow:hidden с холста и body, чтобы контент
@@ -1653,7 +1658,11 @@
         canvasEl.style.overflow = 'visible';
         document.body.style.overflow = 'visible';
 
-        await new Promise(resolve => setTimeout(resolve, 150));
+        // Ждём пару кадров отрисовки перед снимком — надёжнее фиксированной
+        // задержки, особенно когда объектов много и перерисовка тяжелее.
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        await new Promise(resolve => setTimeout(resolve, 80));
 
         const renderedCanvas = await html2canvas(canvasInner, {
           backgroundColor: '#bdb3b2', scale: 2, useCORS: true, logging: false,
